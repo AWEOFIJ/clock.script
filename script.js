@@ -9,34 +9,23 @@ let minutesFlipStart = null;
 let secondsFlipStart = null;
 
 // Synchronized Web Clock
-// Attempts to sync time from NIST (time.gov). Falls back to WorldTimeAPI.
+// Uses HTTP time APIs (no direct NTP in browsers). Attempts timeapi.io, falls back to WorldTimeAPI.
 
 const SOURCES = {
-    nist: {
-        name: "time.nist.gov",
-        // NIST time.gov endpoint returns XML like: <timestamp time="1734231234567"/>
-        url: "https://time.gov/actualtime.cgi?lz=0&fmt=json",
+    timeapi: {
+        name: "timeapi.io (UTC)",
+        url: "https://timeapi.io/api/Time/current/zone?timeZone=UTC",
         parse: (text) => {
-            // time.gov returns something like: { "st": "1734228000000" }
-            try {
-                const json = JSON.parse(text);
-                const ms = Number(json.st);
-                if (!Number.isFinite(ms)) throw new Error("Invalid NIST time");
-                return ms;
-            } catch (e) {
-                // Older format: <timestamp time="..."/>
-                const match = text.match(/time\s*=\s*"(\d+)"/);
-                if (match) return Number(match[1]);
-                throw e;
-            }
+            const json = JSON.parse(text);
+            // returns: { dateTime: "2025-12-15T12:34:56.789Z", ... }
+            return Date.parse(json.dateTime);
         },
     },
-    windowsFallback: {
+    worldtime: {
         name: "worldtimeapi.org (UTC)",
         url: "https://worldtimeapi.org/api/timezone/Etc/UTC",
         parse: (text) => {
             const json = JSON.parse(text);
-            // datetime ISO string, also 'unixtime' seconds
             if (json.unixtime) return json.unixtime * 1000;
             return Date.parse(json.datetime);
         },
@@ -45,6 +34,13 @@ const SOURCES = {
 
 let clockOffsetMs = 0; // serverTime - localTime
 let lastSyncSource = null;
+let tickTimer = null; // handle for per-second ticking
+let statusToken = 0; // to manage transient status messages
+
+// Lightweight helper: compute synced ms from a provided local ms
+function syncedMsFromLocal(localMs) {
+    return localMs + clockOffsetMs;
+}
 
 async function fetchWithRtt(source) {
     const start = performance.now();
@@ -58,54 +54,74 @@ async function fetchWithRtt(source) {
     return { serverMs: estimatedServerAtReceive, rtt };
 }
 
-async function syncTime() {
+async function tryFetchWithRetry(source, retries = 1, delayMs = 500) {
     try {
-        const nist = await fetchWithRtt(SOURCES.nist);
+        return await fetchWithRtt(source);
+    } catch (err) {
+        if (retries > 0) {
+            await new Promise(r => setTimeout(r, delayMs));
+            return tryFetchWithRetry(source, retries - 1, delayMs * 2);
+        }
+        throw err;
+    }
+}
+
+async function syncTime() {
+    updateStatus("Syncing…");
+    try {
+        const primary = await tryFetchWithRetry(SOURCES.timeapi, 1, 500);
         const local = Date.now();
-        clockOffsetMs = nist.serverMs - local;
-        lastSyncSource = SOURCES.nist.name;
-        updateStatus(`Synced with ${lastSyncSource} (RTT ${nist.rtt.toFixed(0)} ms)`);
+        clockOffsetMs = primary.serverMs - local;
+        lastSyncSource = SOURCES.timeapi.name;
+        const t = new Date(syncedMsFromLocal(Date.now()));
+        const pad = (n) => String(n).padStart(2, "0");
+        const ts = `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+        updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${primary.rtt.toFixed(0)} ms)`, 4000);
     } catch (e1) {
         try {
-            const win = await fetchWithRtt(SOURCES.windowsFallback);
+            const fallback = await tryFetchWithRetry(SOURCES.worldtime, 1, 500);
             const local = Date.now();
-            clockOffsetMs = win.serverMs - local;
-            lastSyncSource = SOURCES.windowsFallback.name;
-            updateStatus(`Synced with ${lastSyncSource} (RTT ${win.rtt.toFixed(0)} ms)`);
+            clockOffsetMs = fallback.serverMs - local;
+            lastSyncSource = SOURCES.worldtime.name;
+            const t = new Date(syncedMsFromLocal(Date.now()));
+            const pad = (n) => String(n).padStart(2, "0");
+            const ts = `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+            updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${fallback.rtt.toFixed(0)} ms)`, 4000);
         } catch (e2) {
-            updateStatus("Sync failed; using local system time");
+            updateStatus("Sync failed; using local system time", 5000);
             clockOffsetMs = 0;
             lastSyncSource = "local";
         }
     }
 }
 
+// getSyncedNow kept for infrequent use; avoid calling it in tight loops
 function getSyncedNow() {
-    return Date.now() + clockOffsetMs;
+    return syncedMsFromLocal(Date.now());
 }
 
 function formatTime(ms) {
     const d = new Date(ms);
     const pad = (n) => String(n).padStart(2, "0");
-    const y = d.getUTCFullYear();
-    const mon = pad(d.getUTCMonth() + 1);
-    const day = pad(d.getUTCDate());
-    const h = pad(d.getUTCHours());
-    const m = pad(d.getUTCMinutes());
-    const s = pad(d.getUTCSeconds());
-    const tz = "UTC";
+    const y = d.getFullYear();
+    const mon = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const h = pad(d.getHours());
+    const m = pad(d.getMinutes());
+    const s = pad(d.getSeconds());
+    const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "Local";
     return `${y}-${mon}-${day} ${h}:${m}:${s} ${tz}`;
 }
 
-function updateStatus(msg) {
+function updateStatus(msg, ttlMs) {
     const el = document.getElementById("sync-status");
-    if (el) el.textContent = msg;
+    if (!el) return;
+    el.textContent = msg;
 }
-
 function renderClock() {
     const el = document.getElementById("clock");
     if (!el) return;
-    const ms = getSyncedNow();
+    const ms = syncedMsFromLocal(Date.now());
     el.textContent = formatTime(ms);
     const localEl = document.getElementById("clock-local");
     if (localEl) {
@@ -127,11 +143,9 @@ const HOUR_MS = 60 * 60 * 1000;
 async function startClock() {
     await syncTime();
     renderClock();
-    // Update display every 250ms for smoothness
-    // setInterval(renderClock, 250);
     // Align resync to the top of each hour
     function scheduleHourlyResync() {
-        const nowSynced = getSyncedNow();
+        const nowSynced = syncedMsFromLocal(Date.now());
         const d = new Date(nowSynced);
         d.setMinutes(0, 0, 0); // top of current hour
         const nextTopOfHour = d.getTime() + HOUR_MS;
@@ -157,17 +171,17 @@ function applyTheme(theme) {
         root.classList.add("theme-light");
         root.classList.remove("theme-dark");
     }
-    try { localStorage.setItem("clock-theme", theme); } catch {}
+    try { localStorage.setItem("clock-theme", theme); } catch { }
 }
+
 
 function initTheme() {
     let saved = null;
-    try { saved = localStorage.getItem("clock-theme"); } catch {}
+    try { saved = localStorage.getItem("clock-theme"); } catch { }
     if (!saved) {
         const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        saved = prefersDark ? "dark" : "light";
+
     }
-    applyTheme(saved);
     const btn = document.getElementById("theme-toggle");
     if (btn) {
         btn.addEventListener("click", () => {
@@ -188,40 +202,46 @@ document.addEventListener("DOMContentLoaded", initTheme);
 const ANIMATION_DURATION = 600; // milliseconds
 
 function updateClock() {
-    const now = new Date();
+    const now = new Date(syncedMsFromLocal(Date.now()));
     const currentTime = now.getTime();
-    
+
     // Get date components
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                    'July', 'August', 'September', 'October', 'November', 'December'];
-    
+    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+
     const dayName = days[now.getDay()];
     const monthName = months[now.getMonth()];
     const day = now.getDate();
     const year = now.getFullYear();
-    
+
     // Format date
     const dateString = `${dayName}, ${monthName} ${day}, ${year}`;
-    
+
     // Get time components
     let hours = now.getHours();
     let minutes = now.getMinutes();
     let seconds = now.getSeconds();
-    
+
     // Format with leading zeros
     hours = hours.toString().padStart(2, '0');
     minutes = minutes.toString().padStart(2, '0');
     seconds = seconds.toString().padStart(2, '0');
-    
-    // Update date
-    document.getElementById('date').textContent = dateString;
-    
-    // Check and reset hours animation if needed
+
+    // Update date if present
+    const dateEl = document.getElementById('date');
+    if (dateEl) dateEl.textContent = dateString;
+
+    // Flip cards (guard when elements are not present)
     const hoursCard = document.getElementById('hours-card');
+    const minutesCard = document.getElementById('minutes-card');
+    const secondsCard = document.getElementById('seconds-card');
+    if (!hoursCard || !minutesCard || !secondsCard) {
+        return; // No flip UI available; text clock still updates elsewhere
+    }
     const hoursFront = hoursCard.querySelector('.card-front');
     const hoursBack = hoursCard.querySelector('.card-back');
-    
+
     if (hoursFlipStart !== null && currentTime - hoursFlipStart >= ANIMATION_DURATION) {
         hoursFront.textContent = hoursBack.textContent;
         // Reset without animation by temporarily disabling transition
@@ -233,29 +253,28 @@ function updateClock() {
         hoursCard.style.transition = '';
         hoursFlipStart = null;
     }
-    
+
     // Update hours with flip animation
     if (hours !== previousHours && hoursFlipStart === null) {
         // Only start new animation if previous one is complete
         // Update back face with new value
         hoursBack.textContent = hours;
-        
+
         // Trigger flip animation
         hoursCard.classList.add('flip');
         hoursFlipStart = currentTime;
-        
+
         previousHours = hours;
     } else if (hours !== previousHours) {
         // If animation is in progress, just update the back face value
         hoursBack.textContent = hours;
         previousHours = hours;
     }
-    
+
     // Check and reset minutes animation if needed
-    const minutesCard = document.getElementById('minutes-card');
     const minutesFront = minutesCard.querySelector('.card-front');
     const minutesBack = minutesCard.querySelector('.card-back');
-    
+
     if (minutesFlipStart !== null && currentTime - minutesFlipStart >= ANIMATION_DURATION) {
         minutesFront.textContent = minutesBack.textContent;
         // Reset without animation by temporarily disabling transition
@@ -267,29 +286,28 @@ function updateClock() {
         minutesCard.style.transition = '';
         minutesFlipStart = null;
     }
-    
+
     // Update minutes with flip animation
     if (minutes !== previousMinutes && minutesFlipStart === null) {
         // Only start new animation if previous one is complete
         // Update back face with new value
         minutesBack.textContent = minutes;
-        
+
         // Trigger flip animation
         minutesCard.classList.add('flip');
         minutesFlipStart = currentTime;
-        
+
         previousMinutes = minutes;
     } else if (minutes !== previousMinutes) {
         // If animation is in progress, just update the back face value
         minutesBack.textContent = minutes;
         previousMinutes = minutes;
     }
-    
+
     // Check and reset seconds animation if needed
-    const secondsCard = document.getElementById('seconds-card');
     const secondsFront = secondsCard.querySelector('.card-front');
     const secondsBack = secondsCard.querySelector('.card-back');
-    
+
     if (secondsFlipStart !== null && currentTime - secondsFlipStart >= ANIMATION_DURATION) {
         secondsFront.textContent = secondsBack.textContent;
         // Reset without animation by temporarily disabling transition
@@ -301,17 +319,17 @@ function updateClock() {
         secondsCard.style.transition = '';
         secondsFlipStart = null;
     }
-    
+
     // Update seconds with flip animation
     if (seconds !== previousSeconds && secondsFlipStart === null) {
         // Only start new animation if previous one is complete
         // Update back face with new value
         secondsBack.textContent = seconds;
-        
+
         // Trigger flip animation
         secondsCard.classList.add('flip');
         secondsFlipStart = currentTime;
-        
+
         previousSeconds = seconds;
     } else if (seconds !== previousSeconds) {
         // If animation is in progress, just update the back face value
@@ -321,16 +339,43 @@ function updateClock() {
 }
 
 // Update clock aligned to whole seconds to avoid drift
+// Update display and flip clock aligned to whole seconds using synced time
 function scheduleNextTick() {
-    const now = Date.now();
-    const msToNextSecond = 1000 - (now % 1000);
-    setTimeout(() => {
+    const nowLocal = Date.now();
+    const nowSynced = syncedMsFromLocal(nowLocal);
+    const remainder = Math.floor(nowSynced) % 1000;
+    const msToNextSecond = remainder === 0 ? 1000 : 1000 - remainder;
+    tickTimer = setTimeout(() => {
         updateClock();
+        renderClock();
         scheduleNextTick();
     }, msToNextSecond);
 }
 
+function stopTicking() {
+    if (tickTimer) {
+        clearTimeout(tickTimer);
+        tickTimer = null;
+    }
+}
+
+function startTicking() {
+    if (tickTimer == null) {
+        scheduleNextTick();
+    }
+}
+
+// Pause UI updates in background to save CPU, resume on focus
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+        stopTicking();
+    } else {
+        updateClock();
+        renderClock();
+        startTicking();
+    }
+});
+
 // Initial update and schedule
 updateClock();
 scheduleNextTick();
-
