@@ -51,7 +51,23 @@ async function fetchWithRtt(source) {
     // Approximate network delay half-RTT
     const serverMs = source.parse(text);
     const estimatedServerAtReceive = serverMs + rtt / 2;
-    return { serverMs: estimatedServerAtReceive, rtt };
+    return { serverMs: estimatedServerAtReceive, rtt, clientReceiveMs: Date.now() };
+}
+
+// Measure offset with multiple samples and median to reduce jitter
+async function measureOffset(source, attempts = 5) {
+    const samples = [];
+    for (let i = 0; i < attempts; i++) {
+        const { serverMs, rtt, clientReceiveMs } = await fetchWithRtt(source);
+        // Offset calculation: server time at our receive minus our local receive
+        const offset = serverMs - clientReceiveMs;
+        samples.push({ offset, rtt });
+        await new Promise(r => setTimeout(r, 50));
+    }
+    samples.sort((a, b) => a.offset - b.offset);
+    const median = samples[Math.floor(samples.length / 2)];
+    const avgRtt = samples.reduce((s, x) => s + x.rtt, 0) / samples.length;
+    return { offset: median.offset, rtt: avgRtt };
 }
 
 async function tryFetchWithRetry(source, retries = 1, delayMs = 500) {
@@ -69,9 +85,16 @@ async function tryFetchWithRetry(source, retries = 1, delayMs = 500) {
 async function syncTime() {
     updateStatus("Syncing…");
     try {
-        const primary = await tryFetchWithRetry(SOURCES.timeapi, 1, 500);
-        const local = Date.now();
-        clockOffsetMs = primary.serverMs - local;
+        const primary = await measureOffset(SOURCES.timeapi, 5);
+        const previousOffset = clockOffsetMs;
+        // Bound sudden offset changes to avoid visible jumps unless very large
+        const maxStepMs = 500; // allow up to 500ms correction per sync
+        const delta = primary.offset - previousOffset;
+        if (Math.abs(delta) > maxStepMs) {
+            clockOffsetMs = previousOffset + Math.sign(delta) * maxStepMs;
+        } else {
+            clockOffsetMs = primary.offset;
+        }
         lastSyncSource = SOURCES.timeapi.name;
         const t = new Date(syncedMsFromLocal(Date.now()));
         const pad = (n) => String(n).padStart(2, "0");
@@ -79,9 +102,15 @@ async function syncTime() {
         updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${primary.rtt.toFixed(0)} ms)`, 4000);
     } catch (e1) {
         try {
-            const fallback = await tryFetchWithRetry(SOURCES.worldtime, 1, 500);
-            const local = Date.now();
-            clockOffsetMs = fallback.serverMs - local;
+            const fallback = await measureOffset(SOURCES.worldtime, 5);
+            const previousOffset = clockOffsetMs;
+            const maxStepMs = 500;
+            const delta = fallback.offset - previousOffset;
+            if (Math.abs(delta) > maxStepMs) {
+                clockOffsetMs = previousOffset + Math.sign(delta) * maxStepMs;
+            } else {
+                clockOffsetMs = fallback.offset;
+            }
             lastSyncSource = SOURCES.worldtime.name;
             const t = new Date(syncedMsFromLocal(Date.now()));
             const pad = (n) => String(n).padStart(2, "0");
