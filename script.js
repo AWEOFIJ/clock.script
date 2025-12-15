@@ -122,17 +122,19 @@ function renderClock() {
     }
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
 async function startClock() {
     await syncTime();
     renderClock();
     // Update display every 250ms for smoothness
-    setInterval(renderClock, 250);
+    // setInterval(renderClock, 250);
     // Align resync to the top of each hour
     function scheduleHourlyResync() {
         const nowSynced = getSyncedNow();
         const d = new Date(nowSynced);
         d.setMinutes(0, 0, 0); // top of current hour
-        const nextTopOfHour = d.getTime() + 60 * 60 * 1000;
+        const nextTopOfHour = d.getTime() + HOUR_MS;
         const delay = Math.max(1000, nextTopOfHour - nowSynced); // minimum 1s
         setTimeout(async () => {
             await syncTime();
