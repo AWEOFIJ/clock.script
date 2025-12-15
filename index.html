@@ -1,51 +1,38 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digital Clock</title>
-    <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clock</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        .clock-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            padding: 24px;
+        }
+
+        #clock {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 2.25rem;
+        }
+
+        #sync-status {
+            color: #666;
+            font-size: 0.9rem;
+        }
+    </style>
 </head>
+
 <body>
     <div class="clock-container">
-        <div class="clock-display">
-            <div class="date-section">
-                <span id="date"></span>
-            </div>
-            <div class="time-section">
-                <span class="time-unit">
-                    <span class="label">Hours</span>
-                    <div class="card-container">
-                        <div class="card" id="hours-card">
-                            <div class="card-face card-front">00</div>
-                            <div class="card-face card-back">00</div>
-                        </div>
-                    </div>
-                </span>
-                <span class="separator">:</span>
-                <span class="time-unit">
-                    <span class="label">Minutes</span>
-                    <div class="card-container">
-                        <div class="card" id="minutes-card">
-                            <div class="card-face card-front">00</div>
-                            <div class="card-face card-back">00</div>
-                        </div>
-                    </div>
-                </span>
-                <span class="separator">:</span>
-                <span class="time-unit">
-                    <span class="label">Seconds</span>
-                    <div class="card-container">
-                        <div class="card" id="seconds-card">
-                            <div class="card-face card-front">00</div>
-                            <div class="card-face card-back">00</div>
-                        </div>
-                    </div>
-                </span>
-            </div>
-        </div>
+        <div id="clock" aria-live="polite" title="Synchronized to network time (UTC)">--:--:--</div>
+        <div id="sync-status">Syncing…</div>
     </div>
     <script src="script.js"></script>
 </body>
-</html>
 
+</html>

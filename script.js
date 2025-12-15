@@ -8,6 +8,117 @@ let hoursFlipStart = null;
 let minutesFlipStart = null;
 let secondsFlipStart = null;
 
+// Synchronized Web Clock
+// Attempts to sync time from NIST (time.gov). Falls back to WorldTimeAPI.
+
+const SOURCES = {
+    nist: {
+        name: "time.nist.gov",
+        // NIST time.gov endpoint returns XML like: <timestamp time="1734231234567"/>
+        url: "https://time.gov/actualtime.cgi?lz=0&fmt=json",
+        parse: (text) => {
+            // time.gov returns something like: { "st": "1734228000000" }
+            try {
+                const json = JSON.parse(text);
+                const ms = Number(json.st);
+                if (!Number.isFinite(ms)) throw new Error("Invalid NIST time");
+                return ms;
+            } catch (e) {
+                // Older format: <timestamp time="..."/>
+                const match = text.match(/time\s*=\s*"(\d+)"/);
+                if (match) return Number(match[1]);
+                throw e;
+            }
+        },
+    },
+    windowsFallback: {
+        name: "worldtimeapi.org (UTC)",
+        url: "https://worldtimeapi.org/api/timezone/Etc/UTC",
+        parse: (text) => {
+            const json = JSON.parse(text);
+            // datetime ISO string, also 'unixtime' seconds
+            if (json.unixtime) return json.unixtime * 1000;
+            return Date.parse(json.datetime);
+        },
+    },
+};
+
+let clockOffsetMs = 0; // serverTime - localTime
+let lastSyncSource = null;
+
+async function fetchWithRtt(source) {
+    const start = performance.now();
+    const res = await fetch(source.url, { cache: "no-store" });
+    const text = await res.text();
+    const end = performance.now();
+    const rtt = end - start;
+    // Approximate network delay half-RTT
+    const serverMs = source.parse(text);
+    const estimatedServerAtReceive = serverMs + rtt / 2;
+    return { serverMs: estimatedServerAtReceive, rtt };
+}
+
+async function syncTime() {
+    try {
+        const nist = await fetchWithRtt(SOURCES.nist);
+        const local = Date.now();
+        clockOffsetMs = nist.serverMs - local;
+        lastSyncSource = SOURCES.nist.name;
+        updateStatus(`Synced with ${lastSyncSource} (RTT ${nist.rtt.toFixed(0)} ms)`);
+    } catch (e1) {
+        try {
+            const win = await fetchWithRtt(SOURCES.windowsFallback);
+            const local = Date.now();
+            clockOffsetMs = win.serverMs - local;
+            lastSyncSource = SOURCES.windowsFallback.name;
+            updateStatus(`Synced with ${lastSyncSource} (RTT ${win.rtt.toFixed(0)} ms)`);
+        } catch (e2) {
+            updateStatus("Sync failed; using local system time");
+            clockOffsetMs = 0;
+            lastSyncSource = "local";
+        }
+    }
+}
+
+function getSyncedNow() {
+    return Date.now() + clockOffsetMs;
+}
+
+function formatTime(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    const y = d.getUTCFullYear();
+    const mon = pad(d.getUTCMonth() + 1);
+    const day = pad(d.getUTCDate());
+    const h = pad(d.getUTCHours());
+    const m = pad(d.getUTCMinutes());
+    const s = pad(d.getUTCSeconds());
+    const tz = "UTC";
+    return `${y}-${mon}-${day} ${h}:${m}:${s} ${tz}`;
+}
+
+function updateStatus(msg) {
+    const el = document.getElementById("sync-status");
+    if (el) el.textContent = msg;
+}
+
+function renderClock() {
+    const el = document.getElementById("clock");
+    if (!el) return;
+    const ms = getSyncedNow();
+    el.textContent = formatTime(ms);
+}
+
+async function startClock() {
+    await syncTime();
+    renderClock();
+    // Update display every 250ms for smoothness
+    setInterval(renderClock, 250);
+    // Resync every 10 minutes to reduce drift
+    setInterval(syncTime, 10 * 60 * 1000);
+}
+
+document.addEventListener("DOMContentLoaded", startClock);
 const ANIMATION_DURATION = 600; // milliseconds
 
 function updateClock() {
