@@ -1,2 +1,2 @@
 # clock.script
-javascript_clock
+[javascript_clock](https://aweofij.github.io/clock.script/)
