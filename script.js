@@ -127,8 +127,20 @@ async function startClock() {
     renderClock();
     // Update display every 250ms for smoothness
     setInterval(renderClock, 250);
-    // Resync every 1 hour to reduce drift
-    setInterval(syncTime, 60 * 60 * 1000);
+    // Align resync to the top of each hour
+    function scheduleHourlyResync() {
+        const nowSynced = getSyncedNow();
+        const d = new Date(nowSynced);
+        d.setMinutes(0, 0, 0); // top of current hour
+        const nextTopOfHour = d.getTime() + 60 * 60 * 1000;
+        const delay = Math.max(1000, nextTopOfHour - nowSynced); // minimum 1s
+        setTimeout(async () => {
+            await syncTime();
+            renderClock();
+            scheduleHourlyResync();
+        }, delay);
+    }
+    scheduleHourlyResync();
 }
 
 document.addEventListener("DOMContentLoaded", startClock);
@@ -306,9 +318,17 @@ function updateClock() {
     }
 }
 
-// Update clock immediately
-updateClock();
+// Update clock aligned to whole seconds to avoid drift
+function scheduleNextTick() {
+    const now = Date.now();
+    const msToNextSecond = 1000 - (now % 1000);
+    setTimeout(() => {
+        updateClock();
+        scheduleNextTick();
+    }, msToNextSecond);
+}
 
-// Update clock every 200 milliseconds
-setInterval(updateClock, 100);
+// Initial update and schedule
+updateClock();
+scheduleNextTick();
 
