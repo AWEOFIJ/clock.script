@@ -7,6 +7,23 @@
     <title>Clock</title>
     <link rel="stylesheet" href="style.css" />
     <style>
+        :root {
+            --bg: #ffffff;
+            --fg: #0f172a;
+            --muted: #64748b;
+            --btn-bg: #e2e8f0;
+            --btn-fg: #0f172a;
+            --btn-border: #cbd5e1;
+        }
+        :root.theme-dark {
+            --bg: #0b1220;
+            --fg: #e2e8f0;
+            --muted: #94a3b8;
+            --btn-bg: #17242c;
+            --btn-fg: #e2e8f0;
+            --btn-border: #212731;
+        }
+        body { background: var(--bg); color: var(--fg); }
         .clock-container {
             display: flex;
             flex-direction: column;
@@ -21,15 +38,23 @@
         }
 
         #sync-status {
-            color: #666;
+            color: var(--muted);
             font-size: 0.9rem;
         }
+        .toolbar { position: fixed; top: 12px; right: 12px; }
+        .btn { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-fg); cursor: pointer; }
+        .btn:active { transform: translateY(1px); }
     </style>
 </head>
 
 <body>
+    <div class="toolbar">
+        <button id="theme-toggle" class="btn" aria-label="Toggle Theme">Toggle Theme</button>
+        <button id="sync-now" class="btn" style="margin-left:8px" aria-label="Sync Now">Sync Now</button>
+    </div>
     <div class="clock-container">
         <div id="clock" aria-live="polite" title="Synchronized to network time (UTC)">--:--:--</div>
+        <div id="clock-local" aria-live="polite" title="Local Time">--:--:--</div>
         <div id="sync-status">Syncing…</div>
     </div>
     <script src="script.js"></script>

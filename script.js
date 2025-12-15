@@ -107,6 +107,19 @@ function renderClock() {
     if (!el) return;
     const ms = getSyncedNow();
     el.textContent = formatTime(ms);
+    const localEl = document.getElementById("clock-local");
+    if (localEl) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, "0");
+        const y = d.getFullYear();
+        const mon = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        const h = pad(d.getHours());
+        const m = pad(d.getMinutes());
+        const s = pad(d.getSeconds());
+        const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        localEl.textContent = `${y}-${mon}-${day} ${h}:${m}:${s} ${tzName}`;
+    }
 }
 
 async function startClock() {
@@ -114,11 +127,50 @@ async function startClock() {
     renderClock();
     // Update display every 250ms for smoothness
     setInterval(renderClock, 250);
-    // Resync every 10 minutes to reduce drift
-    setInterval(syncTime, 10 * 60 * 1000);
+    // Resync every 1 hour to reduce drift
+    setInterval(syncTime, 60 * 60 * 1000);
 }
 
 document.addEventListener("DOMContentLoaded", startClock);
+
+// Theme toggle
+function applyTheme(theme) {
+    const root = document.documentElement;
+    if (theme === "dark") {
+        root.classList.add("theme-dark");
+        root.classList.remove("theme-light");
+    } else {
+        root.classList.add("theme-light");
+        root.classList.remove("theme-dark");
+    }
+    try { localStorage.setItem("clock-theme", theme); } catch {}
+}
+
+function initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem("clock-theme"); } catch {}
+    if (!saved) {
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        saved = prefersDark ? "dark" : "light";
+    }
+    applyTheme(saved);
+    const btn = document.getElementById("theme-toggle");
+    if (btn) {
+        btn.addEventListener("click", () => {
+            const current = document.documentElement.classList.contains("theme-dark") ? "dark" : "light";
+            applyTheme(current === "dark" ? "light" : "dark");
+        });
+    }
+    const syncBtn = document.getElementById("sync-now");
+    if (syncBtn) {
+        syncBtn.addEventListener("click", async () => {
+            await syncTime();
+            renderClock();
+        });
+    }
+}
+
+document.addEventListener("DOMContentLoaded", initTheme);
 const ANIMATION_DURATION = 600; // milliseconds
 
 function updateClock() {
