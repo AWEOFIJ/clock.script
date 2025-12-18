@@ -25,8 +25,8 @@ This document describes the main functions in this project and their responsibil
 
 ## Theme
 
-- **applyTheme(theme):** Applies `theme-dark` or `theme-light` CSS classes to the root element and persists the choice to localStorage.
-- **initTheme():** Initializes the theme from localStorage or system preference and binds the `#theme-toggle` button.
+- **applyTheme(theme):** Applies `theme-dark` or `theme-light` CSS classes to the root element. No persistence.
+- **initTheme():** Initializes the theme from system preference and binds the `#theme-toggle` button. No localStorage.
 
 ## Flip Clock
 

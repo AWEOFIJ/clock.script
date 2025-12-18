@@ -30,6 +30,15 @@ const SOURCES = {
             return Date.parse(json.datetime);
         },
     },
+    worldtime_ip: {
+        name: "worldtimeapi.org (IP)",
+        url: "https://worldtimeapi.org/api/ip",
+        parse: (text) => {
+            const json = JSON.parse(text);
+            if (json.unixtime) return json.unixtime * 1000;
+            return Date.parse(json.datetime);
+        },
+    },
 };
 
 let clockOffsetMs = 0; // serverTime - localTime
@@ -44,7 +53,13 @@ function syncedMsFromLocal(localMs) {
 
 async function fetchWithRtt(source) {
     const start = performance.now();
-    const res = await fetch(source.url, { cache: "no-store" });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(source.url, { cache: "no-store", signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) {
+        throw new Error(`HTTP ${res.status} from ${source.name}`);
+    }
     const text = await res.text();
     const end = performance.now();
     const rtt = end - start;
@@ -54,23 +69,8 @@ async function fetchWithRtt(source) {
     return { serverMs: estimatedServerAtReceive, rtt, clientReceiveMs: Date.now() };
 }
 
-// Measure offset with multiple samples and median to reduce jitter
-async function measureOffset(source, attempts = 5) {
-    const samples = [];
-    for (let i = 0; i < attempts; i++) {
-        const { serverMs, rtt, clientReceiveMs } = await fetchWithRtt(source);
-        // Offset calculation: server time at our receive minus our local receive
-        const offset = serverMs - clientReceiveMs;
-        samples.push({ offset, rtt });
-        await new Promise(r => setTimeout(r, 50));
-    }
-    samples.sort((a, b) => a.offset - b.offset);
-    const median = samples[Math.floor(samples.length / 2)];
-    const avgRtt = samples.reduce((s, x) => s + x.rtt, 0) / samples.length;
-    return { offset: median.offset, rtt: avgRtt };
-}
-
-async function tryFetchWithRetry(source, retries = 1, delayMs = 500) {
+// Basic retry wrapper with exponential backoff
+async function tryFetchWithRetry(source, retries = 2, delayMs = 400) {
     try {
         return await fetchWithRtt(source);
     } catch (err) {
@@ -80,6 +80,32 @@ async function tryFetchWithRetry(source, retries = 1, delayMs = 500) {
         }
         throw err;
     }
+}
+
+// Measure offset with multiple samples and median to reduce jitter
+async function measureOffset(source, attempts = 5) {
+    const samples = [];
+    let lastErr = null;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const { serverMs, rtt, clientReceiveMs } = await tryFetchWithRetry(source, 2, 300);
+            // Offset calculation: server time at our receive minus our local receive
+            const offset = serverMs - clientReceiveMs;
+            samples.push({ offset, rtt });
+            console.log(offset, rtt);
+        } catch (err) {
+            lastErr = err;
+            console.log(lastErr);
+        }
+        await new Promise(r => setTimeout(r, 50));
+    }
+    if (samples.length === 0) {
+        throw lastErr || new Error(`No successful samples for ${source.name}`);
+    }
+    samples.sort((a, b) => a.offset - b.offset);
+    const median = samples[Math.floor(samples.length / 2)];
+    const avgRtt = samples.reduce((s, x) => s + x.rtt, 0) / samples.length;
+    return { offset: median.offset, rtt: avgRtt };
 }
 
 async function syncTime() {
@@ -102,7 +128,9 @@ async function syncTime() {
         updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${primary.rtt.toFixed(0)} ms)`, 4000);
     } catch (e1) {
         try {
+            console.log("Primary time sync failed, falling back to secondary source:", e1);
             const fallback = await measureOffset(SOURCES.worldtime, 5);
+            // console.log("Fallback sync result:", fallback);
             const previousOffset = clockOffsetMs;
             const maxStepMs = 500;
             const delta = fallback.offset - previousOffset;
@@ -117,9 +145,29 @@ async function syncTime() {
             const ts = `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
             updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${fallback.rtt.toFixed(0)} ms)`, 4000);
         } catch (e2) {
-            updateStatus("Sync failed; using local system time", 5000);
-            clockOffsetMs = 0;
-            lastSyncSource = "local";
+            try {
+                console.log("Secondary source failed, trying IP-based endpoint:", e2);
+                const fallback2 = await measureOffset(SOURCES.worldtime_ip, 5);
+                // console.log("IP fallback sync result:", fallback2);
+                const previousOffset = clockOffsetMs;
+                const maxStepMs = 500;
+                const delta = fallback2.offset - previousOffset;
+                if (Math.abs(delta) > maxStepMs) {
+                    clockOffsetMs = previousOffset + Math.sign(delta) * maxStepMs;
+                } else {
+                    clockOffsetMs = fallback2.offset;
+                }
+                lastSyncSource = SOURCES.worldtime_ip.name;
+                const t = new Date(syncedMsFromLocal(Date.now()));
+                const pad = (n) => String(n).padStart(2, "0");
+                const ts = `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+                updateStatus(`Synced with ${lastSyncSource} at ${ts} (RTT ${fallback2.rtt.toFixed(0)} ms)`, 4000);
+            } catch (e3) {
+                console.log("All time sources failed:", e3);
+                updateStatus("Sync failed; using local system time", 5000);
+                clockOffsetMs = 0;
+                lastSyncSource = "local";
+            }
         }
     }
 }
@@ -200,17 +248,14 @@ function applyTheme(theme) {
         root.classList.add("theme-light");
         root.classList.remove("theme-dark");
     }
-    try { localStorage.setItem("clock-theme", theme); } catch { }
 }
 
 
 function initTheme() {
-    let saved = null;
-    try { saved = localStorage.getItem("clock-theme"); } catch { }
-    if (!saved) {
-        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-
-    }
+    // No cached theme persistence; rely on current document classes or system preference
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    // Optionally set initial theme without storing it
+    applyTheme(prefersDark ? "dark" : "light");
     const btn = document.getElementById("theme-toggle");
     if (btn) {
         btn.addEventListener("click", () => {
